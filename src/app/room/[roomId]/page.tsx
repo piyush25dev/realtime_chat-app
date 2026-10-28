@@ -43,6 +43,7 @@ const Page = () => {
   const [copyStatus, setCopyStatus] = useState('COPY');
 
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null)
+  const [isDestroyed, setIsDestroyed] = useState(false)
 
   const { data: ttlData } = useQuery({
     queryKey: ["ttl", roomId],
@@ -58,7 +59,7 @@ const Page = () => {
   }, [ttlData])
 
   useEffect(() => {
-    if (timeRemaining === null || timeRemaining < 0) return
+    if (isDestroyed || timeRemaining === null || timeRemaining < 0) return
 
     if (timeRemaining === 0) {
       router.push("/?destroyed=true")
@@ -76,15 +77,23 @@ const Page = () => {
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [timeRemaining, router])
+  }, [timeRemaining, router, isDestroyed])
 
 
   const { data: messages, refetch } = useQuery({
     queryKey: ["messages", roomId],
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
+      if (res.status === 410 || res.status === 404) {
+        setIsDestroyed(true);
+        router.replace("/?destroyed=true");
+        return { messages: [] };
+      }
+      if (!res.data) throw new Error("Unable to load messages");
       return res.data;
     },
+    refetchInterval: 1500,
+    retry: false,
   })
 
   const { mutate: sendMessage, isPending } = useMutation({
@@ -97,15 +106,18 @@ const Page = () => {
     },
   })
 
-  useEffect(() => {
-    const interval = setInterval(() => { void refetch(); }, 1500);
-    return () => clearInterval(interval);
-  }, [refetch]);
-
-  const { mutate: destroyRoom } = useMutation({
+  const { mutate: destroyRoom, isPending: isDestroying } = useMutation({
     mutationFn: async () => {
-      await client.messages.delete(null, { query: { roomId } })
-    }
+      const res = await client.messages.delete(null, { query: { roomId } });
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error("Could not destroy this room. Please try again.");
+      }
+    },
+    onSuccess: () => {
+      setIsDestroyed(true);
+      setTimeRemaining(0);
+      router.replace("/?destroyed=true");
+    },
   })
 
   const copyLink = () => {
@@ -208,7 +220,8 @@ const Page = () => {
           {/* Right Section - Destroy Button */}
           <button 
             onClick={() => destroyRoom()} 
-            className="group/btn relative overflow-hidden flex-shrink-0"
+            disabled={isDestroying}
+            className="group/btn relative overflow-hidden flex-shrink-0 disabled:opacity-50 disabled:cursor-wait"
           >
             <div className="absolute inset-0 bg-gradient-to-r from-red-500/30 to-red-600/30 rounded-lg sm:rounded-xl opacity-0 group-hover/btn:opacity-100 transition-opacity blur-md" />
             <div className="relative flex items-center gap-1.5 sm:gap-2 bg-zinc-900/80 hover:bg-red-950/40 border border-zinc-700/50 hover:border-red-500/50 px-2.5 sm:px-3 lg:px-4 py-2 sm:py-2.5 rounded-lg sm:rounded-xl transition-all duration-300 group-hover/btn:scale-105">
