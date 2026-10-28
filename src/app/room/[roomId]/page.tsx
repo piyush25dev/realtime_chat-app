@@ -1,32 +1,31 @@
 "use client";
-import { useUsername } from '@/hooks/use-username';
-import { client } from '@/lib/client';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { format } from "date-fns"
-import { useParams, useRouter } from 'next/navigation';
-import React, { useEffect, useRef, useState } from 'react'
-import { 
-  Send, 
-  Copy, 
-  Check, 
-  Clock, 
-  Users, 
-  Shield, 
-  Lock, 
-  Terminal, 
-  AlertTriangle,
-  Trash2,
-  User,
-  MoreVertical,
-  Link2,
-  Zap,
-  Eye
-} from 'lucide-react';
+import { useUsername } from "@/hooks/use-username";
+import { client } from "@/lib/client";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
+import { useParams, useRouter } from "next/navigation";
+import React, { useEffect, useRef, useState } from "react";
+import { Bricolage_Grotesque, JetBrains_Mono } from "next/font/google";
+import { AlertTriangle, Check, Copy, Flame, Loader2, Lock, Send, Trash2 } from "lucide-react";
+import { EmberField } from "@/components/ember-field";
+
+const display = Bricolage_Grotesque({ subsets: ["latin"], variable: "--font-display" });
+const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
+
+/*
+  Palette (shared with the lobby)
+  night   #1B1830  page
+  panel   #25213F  surfaces
+  line    #3A3560  borders
+  paper   #F4EFE7  primary text
+  mist    #A8A3BF  secondary text
+  ember   #FF7A45  the one accent
+*/
 
 function formatTimeRemaining(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
 const Page = () => {
@@ -40,47 +39,54 @@ const Page = () => {
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [copyStatus, setCopyStatus] = useState('COPY');
+  const [copied, setCopied] = useState(false);
 
-  const [timeRemaining, setTimeRemaining] = useState<number | null>(null)
-  const [isDestroyed, setIsDestroyed] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
+  const [totalTtl, setTotalTtl] = useState<number | null>(null);
+  const [isDestroyed, setIsDestroyed] = useState(false);
 
   const { data: ttlData } = useQuery({
     queryKey: ["ttl", roomId],
     queryFn: async () => {
-      const res = await client.room.ttl.get({ query: { roomId } })
-      return res.data
+      const res = await client.room.ttl.get({ query: { roomId } });
+      return res.data;
     },
-  })
+  });
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (ttlData?.ttl !== undefined) setTimeRemaining(ttlData.ttl)
-  }, [ttlData])
+    if (ttlData?.ttl !== undefined) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTimeRemaining(ttlData.ttl);
+      // remember the starting value so the fuse bar knows how long it began
+      setTotalTtl((prev) => prev ?? (ttlData.ttl > 0 ? ttlData.ttl : null));
+    }
+  }, [ttlData]);
 
   useEffect(() => {
-    if (isDestroyed || timeRemaining === null || timeRemaining < 0) return
+    if (isDestroyed || timeRemaining === null || timeRemaining < 0) return;
 
     if (timeRemaining === 0) {
-      router.push("/?destroyed=true")
-      return
+      router.push("/?destroyed=true");
+      return;
     }
 
     const interval = setInterval(() => {
       setTimeRemaining((prev) => {
         if (prev === null || prev <= 1) {
-          clearInterval(interval)
-          return 0
+          clearInterval(interval);
+          return 0;
         }
-        return prev - 1
-      })
-    }, 1000)
+        return prev - 1;
+      });
+    }, 1000);
 
-    return () => clearInterval(interval)
-  }, [timeRemaining, router, isDestroyed])
+    return () => clearInterval(interval);
+  }, [timeRemaining, router, isDestroyed]);
 
-
-  const { data: messages, refetch } = useQuery({
+  const { data: messages } = useQuery({
     queryKey: ["messages", roomId],
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
@@ -94,19 +100,21 @@ const Page = () => {
     },
     refetchInterval: 1500,
     retry: false,
-  })
+  });
 
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
-      await client.messages.post(
-        { sender: username, text },
-        { query: { roomId } }
-      );
-      setInput("")
+      await client.messages.post({ sender: username, text }, { query: { roomId } });
+      setInput("");
     },
-  })
+  });
 
-  const { mutate: destroyRoom, isPending: isDestroying } = useMutation({
+  const {
+    mutate: destroyRoom,
+    isPending: isDestroying,
+    isError: destroyFailed,
+    reset: resetDestroy,
+  } = useMutation({
     mutationFn: async () => {
       const res = await client.messages.delete(null, { query: { roomId } });
       if (res.status < 200 || res.status >= 300) {
@@ -118,211 +126,203 @@ const Page = () => {
       setTimeRemaining(0);
       router.replace("/?destroyed=true");
     },
-  })
+  });
 
   const copyLink = () => {
     const url = window.location.href;
-    navigator.clipboard.writeText(url)
-    setCopyStatus('COPIED');
-    setTimeout(() => {
-      setCopyStatus('COPY');
-    }, 2000);
-  }
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Open or close the native <dialog> (gives focus trapping and Esc for free)
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (confirmOpen && !dialog.open) dialog.showModal();
+    if (!confirmOpen && dialog.open) dialog.close();
+  }, [confirmOpen]);
+
+  const closeConfirm = () => {
+    if (isDestroying) return; // don't allow dismissing mid-request
+    setConfirmOpen(false);
+  };
 
   // Auto-scroll to bottom when new messages arrive
   const messagesEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const urgent = timeRemaining !== null && timeRemaining < 60;
+  const fuse =
+    timeRemaining !== null && totalTtl
+      ? Math.max(0, Math.min(1, timeRemaining / totalTtl)) * 100
+      : 100;
+
+  const submit = () => {
+    if (!input.trim() || isPending) return;
+    sendMessage({ text: input });
+    inputRef.current?.focus();
+  };
+
   return (
-    <main className='flex flex-col h-screen max-h-screen overflow-hidden bg-gradient-to-br from-black via-zinc-950 to-black relative'>
-      
-      {/* Enhanced animated background */}
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(34,197,94,0.05)_0%,transparent_50%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,#1a1a1a_1px,transparent_1px),linear-gradient(to_bottom,#1a1a1a_1px,transparent_1px)] bg-[size:3rem_3rem] sm:bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_50%,black_70%,transparent_100%)] opacity-40" />
-      
-      {/* Enhanced glowing orbs */}
-      <div className="absolute top-10 sm:top-20 left-10 sm:left-20 w-48 h-48 sm:w-64 sm:h-64 bg-green-500/10 rounded-full blur-3xl animate-pulse" />
-      <div className="absolute bottom-10 sm:bottom-20 right-10 sm:right-20 w-56 h-56 sm:w-80 sm:h-80 bg-emerald-500/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
-      <div className="absolute top-1/3 right-1/4 w-40 h-40 sm:w-64 sm:h-64 bg-blue-500/5 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '2s' }} />
+    <main
+      className={`${display.variable} ${mono.variable} relative isolate flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden bg-[#1B1830] font-[family-name:var(--font-display)] text-[#F4EFE7]`}
+    >
+      {/* Quiet ember glow and drifting embers */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-[50vh] bg-[radial-gradient(ellipse_60%_80%_at_50%_110%,rgba(255,122,69,0.18),transparent_70%)]"
+      />
+      <EmberField className="absolute inset-0 -z-10 opacity-40" />
 
       {/* Header */}
-      <header className='relative border-b border-zinc-800/90 bg-black/50 backdrop-blur-xl p-3 sm:p-4 lg:p-5'>
-        <div className='flex items-center justify-between gap-3 sm:gap-4 max-w-7xl mx-auto'>
-          {/* Left Section - Room Info & Timer */}
-          <div className='flex items-center gap-2 sm:gap-4 flex-1 min-w-0 flex-wrap lg:flex-nowrap'>
-            {/* Room Info */}
-            <div className='flex items-center gap-2 sm:gap-3 min-w-0'>
-              <div className='hidden sm:block relative flex-shrink-0'>
-                <div className='absolute inset-0 bg-green-500/30 blur-md rounded-lg animate-pulse' />
-                <div className='relative bg-black/60 p-1.5 sm:p-2 rounded-lg border border-green-500/30'>
-                  <Terminal className='h-4 w-4 sm:h-5 sm:w-5 text-green-400' />
-                </div>
-              </div>
-              <div className='flex flex-col min-w-0'>
-                <span className='text-[9px] sm:text-[10px] font-mono text-zinc-500 uppercase tracking-wider flex items-center gap-1'>
-                  <Link2 className='h-2.5 w-2.5 sm:h-3 sm:w-3 flex-shrink-0' />
-                  <span className='hidden sm:inline'>Room ID</span>
-                  <span className='sm:hidden'>Room</span>
+      <header className="relative z-10 border-b border-[#3A3560] bg-[#1B1830]/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3 sm:gap-5">
+            <span className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#3A3560] bg-[#25213F] sm:flex">
+              <Flame className="h-4 w-4 text-[#FF9A6B]" aria-hidden />
+            </span>
+
+            <div className="min-w-0">
+              <p className="text-xs text-[#A8A3BF]">Room</p>
+              <div className="mt-0.5 flex items-center gap-2">
+                <span className="truncate font-[family-name:var(--font-mono)] text-sm">
+                  {roomId.slice(0, 6)}…{roomId.slice(-4)}
                 </span>
-                <div className='flex items-center gap-1.5 sm:gap-2 mt-0.5'>
-                  <span className='font-mono text-[10px] sm:text-xs lg:text-sm font-bold text-green-400 bg-green-950/30 px-1.5 sm:px-2 py-0.5 rounded border border-green-500/30 truncate max-w-[100px] sm:max-w-none'>
-                    <span className='hidden sm:inline'>{roomId.slice(0, 8)}...{roomId.slice(-4)}</span>
-                    <span className='sm:hidden'>{roomId.slice(0, 6)}...</span>
-                  </span>
-                  <button 
-                    className='group/btn relative flex items-center gap-1 sm:gap-1.5 text-[9px] sm:text-[10px] bg-zinc-800/80 hover:bg-zinc-700 px-1.5 sm:px-2 py-1 rounded border border-zinc-700/50 transition-all hover:scale-105 flex-shrink-0' 
-                    onClick={copyLink}
-                  >
-                    {copyStatus === 'COPY' ? (
-                      <Copy className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-zinc-400 group-hover/btn:text-green-400 transition-colors' />
-                    ) : (
-                      <Check className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-green-400' />
-                    )}
-                    <span className={`hidden sm:inline font-mono ${copyStatus === 'COPIED' ? 'text-green-400' : 'text-zinc-400'}`}>
-                      {copyStatus}
-                    </span>
-                  </button>
-                </div>
+                <button
+                  onClick={copyLink}
+                  aria-label={copied ? "Link copied" : "Copy room link"}
+                  className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-[#3A3560] bg-[#25213F] px-2 py-1 text-xs text-[#A8A3BF] transition hover:text-[#F4EFE7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB48A] motion-reduce:transition-none"
+                >
+                  {copied ? (
+                    <Check className="h-3 w-3 text-[#5EE29A]" aria-hidden />
+                  ) : (
+                    <Copy className="h-3 w-3" aria-hidden />
+                  )}
+                  <span className="hidden sm:inline">{copied ? "Copied" : "Copy link"}</span>
+                </button>
               </div>
             </div>
 
-            <div className='hidden lg:block h-8 w-px bg-gradient-to-b from-transparent via-zinc-700 to-transparent flex-shrink-0' />
+            <div className="hidden h-8 w-px bg-[#3A3560] sm:block" />
 
-            {/* Timer */}
-            <div className='flex items-center gap-1.5 sm:gap-2 flex-shrink-0'>
-              <div className='relative'>
-                <div className={`absolute inset-0 ${timeRemaining !== null && timeRemaining < 60 ? 'bg-red-500/30' : 'bg-amber-500/30'} blur-md rounded-full animate-pulse`} />
-                <div className={`relative ${timeRemaining !== null && timeRemaining < 60 ? 'bg-red-500/20' : 'bg-amber-500/20'} p-1.5 sm:p-2 rounded-lg border ${timeRemaining !== null && timeRemaining < 60 ? 'border-red-500/30' : 'border-amber-500/30'}`}>
-                  <Clock className={`h-3 w-3 sm:h-4 sm:w-4 ${timeRemaining !== null && timeRemaining < 60 ? 'text-red-400' : 'text-amber-400'}`} />
-                </div>
-              </div>
-              <div className='flex flex-col'>
-                <span className='text-[8px] sm:text-[10px] font-mono text-zinc-500 uppercase tracking-wider whitespace-nowrap'>
-                  <span className='hidden sm:inline'>Self-Destruct</span>
-                  <span className='sm:hidden'>Timer</span>
-                </span>
-                <span className={`font-mono text-xs sm:text-sm lg:text-base font-bold flex items-center gap-1 ${timeRemaining !== null && timeRemaining < 60 ? 'text-red-400' : 'text-amber-400'}`}>
-                  {timeRemaining !== null ? (
-                    <>
-                      <span className='tabular-nums'>{formatTimeRemaining(timeRemaining)}</span>
-                      <span className='hidden sm:inline text-[8px] sm:text-[9px] text-zinc-500'>left</span>
-                    </>
-                  ) : (
-                    '--:--'
-                  )}
-                </span>
-              </div>
+            <div className="shrink-0">
+              <p className="text-xs text-[#A8A3BF]">Time left</p>
+              <p
+                className={`mt-0.5 font-[family-name:var(--font-mono)] text-base font-medium tabular-nums ${
+                  urgent ? "text-[#FF6B6B]" : "text-[#FFB48A]"
+                }`}
+              >
+                {timeRemaining !== null ? formatTimeRemaining(timeRemaining) : "--:--"}
+              </p>
             </div>
           </div>
 
-          {/* Right Section - Destroy Button */}
-          <button 
-            onClick={() => destroyRoom()} 
+          <button
+            onClick={() => setConfirmOpen(true)}
             disabled={isDestroying}
-            className="group/btn relative overflow-hidden flex-shrink-0 disabled:opacity-50 disabled:cursor-wait"
+            aria-haspopup="dialog"
+            className="flex shrink-0 cursor-pointer items-center gap-2 rounded-xl border border-[#3A3560] bg-[#25213F] px-3 py-2 text-sm font-medium text-[#A8A3BF] transition hover:border-[#FF6B6B]/60 hover:bg-[#FF6B6B]/10 hover:text-[#FF9A9A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF9A9A] disabled:cursor-wait disabled:opacity-60 motion-reduce:transition-none"
           >
-            <div className="absolute inset-0 bg-gradient-to-r from-red-500/30 to-red-600/30 rounded-lg sm:rounded-xl opacity-0 group-hover/btn:opacity-100 transition-opacity blur-md" />
-            <div className="relative flex items-center gap-1.5 sm:gap-2 bg-zinc-900/80 hover:bg-red-950/40 border border-zinc-700/50 hover:border-red-500/50 px-2.5 sm:px-3 lg:px-4 py-2 sm:py-2.5 rounded-lg sm:rounded-xl transition-all duration-300 group-hover/btn:scale-105">
-              <Trash2 className='h-3.5 w-3.5 sm:h-4 sm:w-4 text-zinc-400 group-hover/btn:text-red-400 transition-colors' />
-              <span className='hidden md:inline text-[10px] sm:text-xs font-mono font-bold text-zinc-400 group-hover/btn:text-red-400 transition-colors whitespace-nowrap'>
-                DESTROY
-              </span>
-              <span className='md:hidden text-[10px] sm:text-xs font-mono font-bold text-zinc-400 group-hover/btn:text-red-400 whitespace-nowrap'>
-                END
-              </span>
-            </div>
+            {isDestroying ? (
+              <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden />
+            ) : (
+              <Trash2 className="h-4 w-4" aria-hidden />
+            )}
+            <span className="hidden sm:inline">Destroy room</span>
+            <span className="sm:hidden">Destroy</span>
           </button>
+        </div>
+
+        {/* Fuse: burns down as the room's time runs out */}
+        <div
+          className="relative h-[3px] w-full bg-[#3A3560]/50"
+          role="progressbar"
+          aria-label="Time left before the room self-destructs"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(fuse)}
+        >
+          <div
+            className={`relative h-full transition-[width] duration-1000 ease-linear motion-reduce:transition-none ${
+              urgent ? "bg-[#FF6B6B]" : "bg-[#FF7A45]"
+            }`}
+            style={{ width: `${fuse}%` }}
+          >
+            <span
+              className={`absolute right-0 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full ${
+                urgent
+                  ? "bg-[#FFB4B4] shadow-[0_0_10px_3px_rgba(255,107,107,0.8)]"
+                  : "bg-[#FFB48A] shadow-[0_0_10px_3px_rgba(255,122,69,0.8)]"
+              }`}
+            />
+          </div>
         </div>
       </header>
 
-      {/* Messages Area */}
-<div className="flex-1 overflow-y-auto relative custom-scrollbar">
-        <div className='absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-black/30 pointer-events-none' />
-        
-        <div className='relative p-3 sm:p-4 lg:p-6 space-y-3 sm:space-y-4 max-w-5xl mx-auto w-full'>
+      {/* Messages */}
+      <div className="relative flex-1 overflow-y-auto [scrollbar-color:#3A3560_transparent] [scrollbar-width:thin]">
+        <div
+          role="log"
+          aria-live="polite"
+          className="mx-auto w-full max-w-3xl space-y-1.5 px-4 py-6 sm:px-6"
+        >
           {messages?.messages.length === 0 && (
-            <div className='flex flex-col items-center justify-center min-h-[50vh] sm:min-h-[60vh] px-4'>
-              <div className='relative mb-4 sm:mb-6'>
-                <div className='absolute inset-0 bg-green-500/20 blur-3xl rounded-full animate-pulse' />
-                <div className='relative bg-green-500/10 p-4 sm:p-6 rounded-2xl border border-green-500/20'>
-                  <Users className='h-10 w-10 sm:h-12 sm:w-12 text-green-500/40' />
-                </div>
-              </div>
-              <p className='text-zinc-600 text-xs sm:text-sm font-mono text-center mb-2'>
-                <span className='text-green-500/60'>{'>'}</span> No messages yet, start the conversation!
+            <div className="flex min-h-[55vh] flex-col items-center justify-center px-4 text-center">
+              <span className="flex h-14 w-14 items-center justify-center rounded-full border border-[#3A3560] bg-[#25213F]">
+                <Flame className="h-6 w-6 text-[#FF9A6B]" aria-hidden />
+              </span>
+              <h2 className="mt-5 text-xl font-semibold tracking-tight">Nothing here yet</h2>
+              <p className="mt-2 max-w-xs text-sm leading-relaxed text-[#A8A3BF]">
+                Send the first message, or copy the link and invite one person. Everything
+                disappears when the timer ends.
               </p>
-              <p className='text-[9px] sm:text-[10px] text-zinc-700 font-mono text-center'>
-                All messages are ephemeral and encrypted
-              </p>
-              <div className='flex items-center gap-3 sm:gap-4 mt-4 sm:mt-6'>
-                <div className='flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full bg-black/40 border border-zinc-800/50'>
-                  <Lock className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-green-500/50' />
-                  <span className='text-[8px] sm:text-[9px] font-mono text-zinc-600'>256-bit</span>
-                </div>
-                <div className='flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full bg-black/40 border border-zinc-800/50'>
-                  <Zap className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-amber-500/50' />
-                  <span className='text-[8px] sm:text-[9px] font-mono text-zinc-600'>auto-destruct</span>
-                </div>
-              </div>
             </div>
           )}
 
           {messages?.messages.map((msg, index) => {
             const isOwn = msg.sender === username;
-            const showAvatar = index === 0 || messages.messages[index - 1]?.sender !== msg.sender;
-            
-            return (
-              <div 
-                key={msg.id} 
-                className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-300`}
-              >
-                <div className={`max-w-[90%] sm:max-w-[85%] lg:max-w-[70%] group relative`}>
-                  {/* Sender info */}
-                  {showAvatar && (
-                    <div className={`flex items-baseline gap-1.5 sm:gap-2 mb-1 sm:mb-1.5 ${isOwn ? 'flex-row-reverse' : ''}`}>
-                      <div className={`flex items-center gap-1 sm:gap-1.5 ${isOwn ? 'flex-row-reverse' : ''}`}>
-                        <div className={`w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center flex-shrink-0 ${
-                          isOwn ? 'bg-green-500/20' : 'bg-blue-500/20'
-                        } border ${isOwn ? 'border-green-500/40' : 'border-blue-500/40'}`}>
-                          <User className={`h-2 w-2 sm:h-3 sm:w-3 ${isOwn ? 'text-green-400' : 'text-blue-400'}`} />
-                        </div>
-                        <span className={`text-[10px] sm:text-xs font-mono font-bold ${isOwn ? 'text-green-400' : 'text-blue-400'}`}>
-                          {isOwn ? 'You' : msg.sender}
-                        </span>
-                      </div>
-                      <span className="text-[8px] sm:text-[9px] font-mono text-zinc-600 tabular-nums">
-                        {format(msg.timestamp, "HH:mm:ss")}
-                      </span>
-                    </div>
-                  )}
+            const startsGroup =
+              index === 0 || messages.messages[index - 1]?.sender !== msg.sender;
 
-                  {/* Message bubble */}
-                  <div className={`relative group/bubble ${!showAvatar ? 'mt-0.5' : ''}`}>
-                    <div className={`absolute -inset-0.5 ${
-                      isOwn 
-                        ? 'bg-gradient-to-r from-green-500/20 to-emerald-500/20' 
-                        : 'bg-gradient-to-r from-blue-500/20 to-indigo-500/20'
-                    } rounded-2xl blur-md opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-300`} />
-                    
-                    <div className={`relative px-3 sm:px-4 py-2 sm:py-2.5 lg:py-3 rounded-2xl ${
-                      isOwn 
-                        ? 'bg-gradient-to-br from-green-950/50 to-emerald-950/50 border border-green-500/40' 
-                        : 'bg-gradient-to-br from-zinc-900/95 to-black border border-zinc-800/90'
-                    } backdrop-blur-xl shadow-lg`}>
-                      <p className='text-xs sm:text-sm text-zinc-200 leading-relaxed break-words font-mono'>
-                        {msg.text}
-                      </p>
-                    </div>
-                    
-                    {/* Message metadata */}
-                    <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} -bottom-5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none`}>
-                      <span className="text-[7px] sm:text-[8px] font-mono text-zinc-600">
-                        ID: {msg.id.slice(0, 4)}...
-                      </span>
-                    </div>
+            return (
+              <div
+                key={msg.id}
+                className={`flex flex-col ${isOwn ? "items-end" : "items-start"} ${
+                  startsGroup && index !== 0 ? "pt-3" : ""
+                } animate-in fade-in duration-300 motion-reduce:animate-none`}
+              >
+                {startsGroup && (
+                  <div
+                    className={`mb-1 flex items-baseline gap-2 px-1 ${
+                      isOwn ? "flex-row-reverse" : ""
+                    }`}
+                  >
+                    <span
+                      className={`text-xs font-semibold ${
+                        isOwn ? "text-[#FFB48A]" : "text-[#F4EFE7]"
+                      }`}
+                    >
+                      {isOwn ? "You" : msg.sender}
+                    </span>
+                    <span className="font-[family-name:var(--font-mono)] text-[11px] tabular-nums text-[#A8A3BF]">
+                      {format(msg.timestamp, "HH:mm")}
+                    </span>
                   </div>
+                )}
+
+                <div
+                  className={`max-w-[88%] rounded-2xl border px-4 py-2.5 sm:max-w-[75%] ${
+                    isOwn
+                      ? "rounded-br-md border-[#FF7A45]/35 bg-[#FF7A45]/15"
+                      : "rounded-bl-md border-[#3A3560] bg-[#25213F]"
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">
+                    {msg.text}
+                  </p>
                 </div>
               </div>
             );
@@ -331,106 +331,126 @@ const Page = () => {
         </div>
       </div>
 
-      {/* Input Area */}
-      <div className='relative border-t border-zinc-800/90 bg-black/50 backdrop-blur-xl p-3 sm:p-4 lg:p-5'>
-        <div className='max-w-5xl mx-auto w-full'>
-          <div className='flex gap-2 sm:gap-3 items-end'>
-            <div className='flex-1 relative group/input'>
-              <div className='absolute -inset-0.5 bg-gradient-to-r from-green-500/30 to-emerald-500/30 rounded-lg sm:rounded-xl opacity-0 group-hover/input:opacity-100 transition duration-500 blur-sm' />
-              
-              <div className='relative'>
-                <span className='absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-green-500 font-mono text-xs sm:text-sm font-bold'>
-                  {'>'}
+      {/* Composer */}
+      <div className="relative z-10 border-t border-[#3A3560] bg-[#1B1830]/80 backdrop-blur-md">
+        <div className="mx-auto w-full max-w-3xl px-4 py-3 sm:px-6 sm:py-4">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="relative flex-1">
+              <input
+                ref={inputRef}
+                autoFocus
+                type="text"
+                value={input}
+                maxLength={500}
+                aria-label="Message"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submit();
+                }}
+                placeholder="Write a message"
+                onChange={(e) => setInput(e.target.value)}
+                className="w-full rounded-2xl border border-[#3A3560] bg-[#25213F] py-3.5 pl-4 pr-16 text-[15px] text-[#F4EFE7] placeholder:text-[#A8A3BF]/70 transition focus:border-[#FF7A45]/70 focus:outline-none focus:ring-2 focus:ring-[#FF7A45]/25 motion-reduce:transition-none"
+              />
+              {input.length > 0 && (
+                <span
+                  className={`pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 font-[family-name:var(--font-mono)] text-[11px] tabular-nums ${
+                    input.length > 450 ? "text-[#FFC145]" : "text-[#A8A3BF]"
+                  }`}
+                >
+                  {input.length}/500
                 </span>
-                <input
-                  ref={inputRef}
-                  autoFocus
-                  type="text"
-                  value={input}
-                  maxLength={500}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && input.trim()) {
-                      sendMessage({ text: input })
-                      inputRef.current?.focus()
-                    }
-                  }}
-                  placeholder="Type your encrypted message..."
-                  onChange={(e) => setInput(e.target.value)}
-                  className="w-full bg-black/80 border border-zinc-800/90 focus:border-green-500/50 focus:outline-none transition-all duration-300 text-zinc-100 placeholder:text-zinc-700 py-3 sm:py-3.5 lg:py-4 pl-8 sm:pl-10 pr-16 sm:pr-20 text-xs sm:text-sm rounded-lg sm:rounded-xl font-mono focus:ring-2 focus:ring-green-500/20 shadow-lg"
-                />
-                
-                {/* Character count */}
-                {input.length > 0 && (
-                  <div className='absolute right-2 sm:right-3 top-1/2 -translate-y-1/2'>
-                    <span className={`text-[9px] sm:text-[10px] font-mono ${input.length > 450 ? 'text-amber-500' : 'text-zinc-600'}`}>
-                      {input.length}/500
-                    </span>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
 
             <button
-              onClick={() => {
-                sendMessage({ text: input })
-                inputRef.current?.focus()
-              }}
+              onClick={submit}
               disabled={!input.trim() || isPending}
-              className="group/btn relative disabled:cursor-not-allowed flex-shrink-0"
+              aria-label="Send message"
+              className="flex h-[50px] w-[50px] shrink-0 cursor-pointer items-center justify-center rounded-2xl bg-[#FF7A45] text-[#1B1830] transition hover:bg-[#FF8D5E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB48A] focus-visible:ring-offset-2 focus-visible:ring-offset-[#1B1830] active:scale-95 disabled:cursor-not-allowed disabled:bg-[#25213F] disabled:text-[#A8A3BF]/50 motion-reduce:transition-none"
             >
-              <div className="absolute inset-0 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg sm:rounded-xl opacity-20 group-hover/btn:opacity-40 blur-md transition-opacity disabled:opacity-0" />
-              
-              <div className={`relative flex items-center justify-center gap-1.5 sm:gap-2 px-4 sm:px-5 lg:px-6 py-3 sm:py-3.5 lg:py-4 rounded-lg sm:rounded-xl transition-all duration-300 ${
-                !input.trim() || isPending
-                  ? 'bg-zinc-900 border border-zinc-800'
-                  : 'bg-gradient-to-r from-green-600/30 to-emerald-600/30 border border-green-500/40 hover:border-green-500/60 hover:scale-105 shadow-lg shadow-green-500/10'
-              }`}>
-                {isPending ? (
-                  <>
-                    <div className="w-3.5 h-3.5 sm:w-4 sm:h-4 border-2 border-green-500/30 border-t-green-500 rounded-full animate-spin" />
-                    <span className='hidden sm:inline text-[10px] sm:text-xs font-mono font-bold text-green-400/70'>
-                      SENDING
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Send className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${input.trim() ? 'text-green-400' : 'text-zinc-600'}`} />
-                    <span className={`hidden sm:inline text-[10px] sm:text-xs font-mono font-bold ${
-                      input.trim() ? 'text-green-400' : 'text-zinc-600'
-                    }`}>
-                      SEND
-                    </span>
-                  </>
-                )}
-              </div>
+              {isPending ? (
+                <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" aria-hidden />
+              ) : (
+                <Send className="h-5 w-5" aria-hidden />
+              )}
             </button>
           </div>
 
-          {/* Security badges */}
-          <div className='flex items-center justify-center sm:justify-end gap-2 sm:gap-3 mt-2 sm:mt-3 flex-wrap'>
-            <div className='flex items-center gap-1 sm:gap-1.5 px-2 py-1 rounded-full bg-black/40 border border-zinc-800/50'>
-              <Lock className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-zinc-700 flex-shrink-0' />
-              <span className='text-[7px] sm:text-[8px] font-mono text-zinc-700 whitespace-nowrap'>
-                END-TO-END ENCRYPTED
-              </span>
-            </div>
-            <div className='flex items-center gap-1 sm:gap-1.5 px-2 py-1 rounded-full bg-black/40 border border-zinc-800/50'>
-              <Shield className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-zinc-700 flex-shrink-0' />
-              <span className='text-[7px] sm:text-[8px] font-mono text-zinc-700 whitespace-nowrap'>
-                SELF-DESTRUCT
-              </span>
-            </div>
-            <div className='flex items-center gap-1 sm:gap-1.5 px-2 py-1 rounded-full bg-black/40 border border-zinc-800/50'>
-              <Eye className='h-2.5 w-2.5 sm:h-3 sm:w-3 text-zinc-700 flex-shrink-0' />
-              <span className='text-[7px] sm:text-[8px] font-mono text-zinc-700 whitespace-nowrap'>
-                ZERO-KNOWLEDGE
-              </span>
-            </div>
-          </div>
+          <p className="mt-2.5 flex items-center justify-center gap-1.5 text-xs text-[#A8A3BF] sm:justify-end">
+            <Lock className="h-3 w-3" aria-hidden />
+            Encrypted and deleted when the timer ends
+          </p>
         </div>
       </div>
-    </main>
-  )
-}
+      {/* Destroy confirmation */}
+      <dialog
+        ref={dialogRef}
+        onClose={() => {
+          setConfirmOpen(false);
+          resetDestroy();
+        }}
+        onCancel={(e) => {
+          if (isDestroying) e.preventDefault();
+        }}
+        onClick={(e) => {
+          // a click on the backdrop lands on the <dialog> itself
+          if (e.target === e.currentTarget) closeConfirm();
+        }}
+        aria-labelledby="destroy-title"
+        aria-describedby="destroy-desc"
+        className="m-auto w-[calc(100%-2rem)] max-w-md rounded-3xl border border-[#3A3560] bg-[#25213F] p-0 font-[family-name:var(--font-display)] text-[#F4EFE7] shadow-[0_30px_80px_-20px_rgba(0,0,0,0.7)] backdrop:bg-[#0F0D1F]/75 backdrop:backdrop-blur-sm open:animate-in open:fade-in open:zoom-in-95 open:duration-200 motion-reduce:animate-none"
+      >
+        <div className="p-6 sm:p-7">
+          <span className="flex h-11 w-11 items-center justify-center rounded-full border border-[#FF6B6B]/40 bg-[#FF6B6B]/10">
+            <AlertTriangle className="h-5 w-5 text-[#FF9A9A]" aria-hidden />
+          </span>
 
-export default Page
+          <h2 id="destroy-title" className="mt-5 text-xl font-semibold tracking-tight">
+            Destroy this room?
+          </h2>
+          <p id="destroy-desc" className="mt-2 text-sm leading-relaxed text-[#A8A3BF]">
+            Every message is permanently deleted for both of you, and the room link stops
+            working. This can&rsquo;t be undone.
+          </p>
+
+          {destroyFailed && (
+            <p
+              role="alert"
+              className="mt-4 rounded-lg border border-[#FF6B6B]/40 bg-[#FF6B6B]/10 px-3 py-2 text-sm text-[#FF9A9A]"
+            >
+              Couldn&rsquo;t destroy the room. Try again.
+            </p>
+          )}
+
+          <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <button
+              onClick={closeConfirm}
+              disabled={isDestroying}
+              className="cursor-pointer rounded-xl border border-[#3A3560] px-5 py-3 text-sm font-medium text-[#F4EFE7] transition hover:bg-[#3A3560]/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB48A] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => destroyRoom()}
+              disabled={isDestroying}
+              className="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#FF6B6B] px-5 py-3 text-sm font-semibold text-[#1B1830] transition hover:bg-[#FF8282] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB4B4] focus-visible:ring-offset-2 focus-visible:ring-offset-[#25213F] disabled:cursor-wait disabled:opacity-70 motion-reduce:transition-none"
+            >
+              {isDestroying ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden />
+                  Destroying…
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  Destroy room
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    </main>
+  );
+};
+
+export default Page;
