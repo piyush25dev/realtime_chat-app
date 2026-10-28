@@ -1,6 +1,2 @@
-"use client"
-
-import { createRealtime } from "@upstash/realtime/client"
-import type { RealtimeEvents } from "./realtime"
-
-export const { useRealtime} = createRealtime<RealtimeEvents>()
+// Upstash Realtime has been removed. The room page polls the protected messages API
+export {};
