@@ -1,7 +1,6 @@
 "use client";
 import { useUsername } from '@/hooks/use-username';
 import { client } from '@/lib/client';
-import { useRealtime } from '@/lib/realtime-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { format } from "date-fns"
 import { useParams, useRouter } from 'next/navigation';
@@ -98,19 +97,10 @@ const Page = () => {
     },
   })
 
-  useRealtime({
-    channels: [roomId],
-    events: ["chat.message", "chat.destroy"],
-    onData: ({ event }) => {
-      if (event === "chat.message") {
-        refetch()
-      }
-
-      if (event === "chat.destroy") {
-        router.push("/?destroyed=true")
-      }
-    }
-  })
+  useEffect(() => {
+    const interval = setInterval(() => { void refetch(); }, 1500);
+    return () => clearInterval(interval);
+  }, [refetch]);
 
   const { mutate: destroyRoom } = useMutation({
     mutationFn: async () => {

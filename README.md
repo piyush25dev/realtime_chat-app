@@ -1,91 +1,30 @@
-# Realtime Self-Destruct Chat
+# Realtime Self-Destruct Chat (Firebase)
 
-Temporary, secure, real-time chat rooms that automatically delete all data after **10 minutes**.
+This version replaces Upstash Redis and Upstash Realtime with Cloud Firestore through the Firebase Admin SDK. Users do not need to sign in. The server uses an HTTP-only room token cookie to authorize room access; Firestore is never accessed directly from the browser. The room page refreshes message history every 1.5 seconds.
 
-Built with **Next.js 16**, **Elysia**, **Upstash Redis**, and **Upstash Realtime**.
+## Setup
 
----
+1. Create a Firebase project at https://console.firebase.google.com/.
+2. Create a Cloud Firestore database.
+3. In **Project settings → Service accounts**, generate a private key.
+4. Copy `.env.example` to `.env.local` and set:
+   - `FIREBASE_PROJECT_ID`
+   - `FIREBASE_CLIENT_EMAIL`
+   - `FIREBASE_PRIVATE_KEY` (keep the `\n` sequences in the environment value; never commit this file)
+5. Install and run:
 
-## ✨ Features
+   ```bash
+   npm install
+   npm run dev
+   ```
 
-- ⚡ Real-time messaging
-- 🔐 Room-based chat system
-- ⏳ Automatic self-destruction (10 minute TTL)
-- 🗄️ Redis-backed storage
-- 📡 WebSocket event broadcasting
-- 🧠 Fully typed with TypeScript + Zod
-- 🎨 Clean Tailwind UI
+## Ten-minute cleanup
 
----
+The server rejects rooms after their 10-minute expiry even if Firestore's cleanup has not run. For automatic storage cleanup, enable a Firestore TTL policy on the `expiresAt` field for both the `rooms` and `messages` collection groups. TTL deletion is asynchronous, not an exact timer; messages include the same expiry timestamp as their room. If your Firebase console does not expose collection-group TTL configuration, configure it through Google Cloud Firestore's TTL settings.
 
-## 🏗 Tech Stack
+## Security notes
 
-### Frontend
-- Next.js (App Router)
-- React 19
-- TailwindCSS
-- TanStack React Query
-
-### Backend
-- Elysia
-- Upstash Redis
-- Upstash Realtime
-- NanoID
-- Zod
-
----
-
-## 🧠 How It Works
-
-1. A room is created with a unique `roomId`.
-2. Redis stores room metadata with a **10-minute TTL**.
-3. Messages are stored under `messages:{roomId}`.
-4. When TTL expires:
-   - All room data is automatically deleted.
-   - Clients receive a `chat.destroy` event.
-   - Users are redirected.
-
-No manual cleanup required.
-
----
-
-## ⚙️ Environment Variables
-
-Create a `.env.local` file:
-
-```env
-UPSTASH_REDIS_REST_URL=
-UPSTASH_REDIS_REST_TOKEN=
-
-UPSTASH_REALTIME_REST_URL=
-UPSTASH_REALTIME_REST_TOKEN=
-
-
-## 🚀 Installation 
-npm install
-
-## Run development server:
-npm run dev
-
-## Open in browser:
-http://localhost:3000
-
-## 📡 API Overview
-POST   /api/room/create
-GET    /api/room/ttl?roomId=...
-POST   /api/messages?roomId=...
-GET    /api/messages?roomId=...
-DELETE /api/messages?roomId=...
-
-
-## 🛠 Build
-npm run build
-npm start
-
-
-## 💡 Author
- -Built as a learning project to explore:
- -Real-time systems
- -Redis TTL-based auto-cleanup
- -Event-driven architecture
- -Full-stack Next.js setup
+- No Firebase Authentication is used.
+- Do not expose the service-account private key in any `NEXT_PUBLIC_*` variable.
+- Firestore client access is not needed. Keep client Firestore rules closed to unauthenticated users; the application accesses Firestore only on the server.
+- Anyone who has a valid room URL can attempt to join, and each room allows two browser tokens. Treat room URLs as secrets.

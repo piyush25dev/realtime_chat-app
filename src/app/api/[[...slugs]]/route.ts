@@ -1,122 +1,72 @@
-import { redis } from "@/lib/redis";
-import { Elysia } from "elysia";
+import { NextRequest, NextResponse } from "next/server";
 import { nanoid } from "nanoid";
-import { authMiddleware } from "./auth";
-import { z } from "zod";
-import { Message, realtime } from "@/lib/realtime";
+import { ChatMessage, db, getRoom, ROOM_TTL_SECONDS, RoomData } from "@/lib/firebase-admin";
 
-const ROOM_TTL_SECONDS = 60 * 10; // 10 mnts
+function unauthorized(message = "Unauthorized") { return NextResponse.json({ error: message }, { status: 401 }); }
+function badRequest(message: string, status = 400) { return NextResponse.json({ error: message }, { status }); }
+async function authorizedRoom(request: NextRequest, roomId: string) {
+  const token = request.cookies.get("x-auth-token")?.value;
+  if (!token) return null;
+  const room = await getRoom(roomId);
+  if (!room || room.data.destroyed || !room.data.connected.includes(token)) return null;
+  return { ...room, token };
+}
 
-const room = new Elysia({ prefix: "/room" })
-  .post("/create", async () => {
-    const roomId = nanoid();
-
-    await redis.hset(`meta:${roomId}`, {
-      connected: [],
-      createdAt: Date.now(),
+export async function GET(request: NextRequest) {
+  const path = new URL(request.url).pathname.replace(/^\/api\/?/, "");
+  const roomId = new URL(request.url).searchParams.get("roomId") || "";
+  if (path === "room/ttl") {
+    const room = await authorizedRoom(request, roomId);
+    if (!room) return unauthorized();
+    return NextResponse.json({ ttl: Math.max(0, Math.ceil((room.data.expiresAt.getTime() - Date.now()) / 1000)) });
+  }
+  if (path === "messages") {
+    const room = await authorizedRoom(request, roomId);
+    if (!room) return unauthorized();
+    const snapshot = await room.ref.collection("messages").orderBy("timestamp", "asc").get();
+    const messages = snapshot.docs.map(doc => {
+      const message = doc.data() as ChatMessage;
+      return { ...message, token: message.token === room.token ? message.token : undefined };
     });
+    return NextResponse.json({ messages });
+  }
+  return badRequest("Not found", 404);
+}
 
-    await redis.expire(`meta:${roomId}`, ROOM_TTL_SECONDS);
+export async function POST(request: NextRequest) {
+  const path = new URL(request.url).pathname.replace(/^\/api\/?/, "");
+  if (path === "room/create") {
+    const roomId = nanoid();
+    const now = Date.now();
+    const room: RoomData = { createdAt: now, expiresAt: new Date(now + ROOM_TTL_SECONDS * 1000), connected: [] };
+    await db().collection("rooms").doc(roomId).set(room);
+    return NextResponse.json({ roomId });
+  }
+  if (path === "messages") {
+    const roomId = new URL(request.url).searchParams.get("roomId") || "";
+    const room = await authorizedRoom(request, roomId);
+    if (!room) return unauthorized();
+    const body = await request.json().catch(() => null) as { sender?: string; text?: string } | null;
+    const sender = body?.sender?.trim();
+    const text = body?.text?.trim();
+    if (!sender || sender.length > 100 || !text || text.length > 1000) return badRequest("Sender and message are required; maximum lengths are 100 and 1000 characters.");
+    const message: ChatMessage = { id: nanoid(), sender, text, timestamp: Date.now(), roomId, token: room.token, expiresAt: room.data.expiresAt };
+    await room.ref.collection("messages").doc(message.id).set(message);
+    return NextResponse.json({ ok: true });
+  }
+  return badRequest("Not found", 404);
+}
 
-    return {
-      roomId,
-    };
-  })
-  .use(authMiddleware)
-  .get(
-    "ttl",
-    async ({ auth }) => {
-      const ttl = await redis.ttl(`meta:${auth.roomId}`);
-      return { ttl: ttl > 0 ? ttl : 0 };
-    },
-    {
-      query: z.object({
-        roomId: z.string(),
-      }),
-    },
-  );
-
-const messages = new Elysia({ prefix: "/messages" })
-  .use(authMiddleware)
-  .post(
-    "/",
-    async ({ body, auth }) => {
-      const { sender, text } = body;
-      const { roomId } = auth;
-
-      const roomExists = await redis.exists(`meta:${roomId}`);
-
-      if (!roomExists) {
-        throw new Error("Room does not exist");
-      }
-
-      const message: Message = {
-        id: nanoid(),
-        sender,
-        text,
-        timestamp: Date.now(),
-        roomId,
-      };
-
-      // add message to history
-      await redis.rpush(`messages:${roomId}`, {
-        ...message,
-        token: auth.token,
-      });
-      await realtime.channel(roomId).emit("chat.message", message);
-
-      // housekeeping
-      const remaining = await redis.ttl(`meta:${roomId}`);
-
-      await redis.expire(`messages:${roomId}`, remaining);
-      await redis.expire(`history:${roomId}`, remaining);
-      await redis.expire(roomId, remaining);
-    },
-    {
-      query: z.object({ roomId: z.string() }),
-      body: z.object({
-        sender: z.string().max(100),
-        text: z.string().max(1000),
-      }),
-    },
-  )
-  .get(
-    "/",
-    async ({ auth }) => {
-      const messages = await redis.lrange<Message>(
-        `messages:${auth.roomId}`,
-        0,
-        -1,
-      );
-
-      return {
-        messages: messages.map((m) => ({
-          ...m,
-          token: m.token === auth.token ? m.token : undefined, // only return token if it belongs to the requester
-        })),
-      };
-    },
-    { query: z.object({ roomId: z.string() }) },
-  )
-  .delete(
-    "/",
-    async ({ auth }) => {
-      await realtime.channel(auth.roomId).emit("chat.destroy", { isDestroyed: true})
-      
-      await Promise.all([
-        redis.del(auth.roomId),
-        redis.del(`meta:${auth.roomId}`),
-        redis.del(`messages:${auth.roomId}`),
-      ]);
-
-    },
-    { query: z.object({ roomId: z.string() }) },
-  );
-
-const app = new Elysia({ prefix: "/api" }).use(room).use(messages);
-
-export const GET = app.fetch;
-export const POST = app.fetch;
-export const DELETE = app.fetch;
-
-export type App = typeof app;
+export async function DELETE(request: NextRequest) {
+  const path = new URL(request.url).pathname.replace(/^\/api\/?/, "");
+  if (path !== "messages") return badRequest("Not found", 404);
+  const roomId = new URL(request.url).searchParams.get("roomId") || "";
+  const room = await authorizedRoom(request, roomId);
+  if (!room) return unauthorized();
+  const messages = await room.ref.collection("messages").get();
+  const batch = db().batch();
+  messages.docs.forEach(doc => batch.delete(doc.ref));
+  batch.delete(room.ref);
+  await batch.commit();
+  return NextResponse.json({ ok: true });
+}

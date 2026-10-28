@@ -1,57 +1,21 @@
-import { NextRequest, NextResponse } from "next/server"
-import { redis } from "./lib/redis";
+import { NextRequest, NextResponse } from "next/server";
 import { nanoid } from "nanoid";
+import { getRoom } from "./lib/firebase-admin";
 
 export const proxy = async (req: NextRequest) => {
-    const pathname = req.nextUrl.pathname;
+  const match = req.nextUrl.pathname.match(/^\/room\/([^/]+)\/?$/);
+  if (!match) return NextResponse.next();
+  const roomId = match[1];
+  const room = await getRoom(roomId);
+  if (!room || room.data.destroyed) return NextResponse.redirect(new URL("/?error=room-not-found", req.url));
+  const existingToken = req.cookies.get("x-auth-token")?.value;
+  if (existingToken && room.data.connected.includes(existingToken)) return NextResponse.next();
+  if (room.data.connected.length >= 2) return NextResponse.redirect(new URL("/?error=room-full", req.url));
+  const token = nanoid();
+  await room.ref.update({ connected: [...room.data.connected, token] });
+  const response = NextResponse.next();
+  response.cookies.set("x-auth-token", token, { path: "/", httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", expires: room.data.expiresAt });
+  return response;
+};
 
-    const roomMatch = pathname.match(/^\/room\/([^\/]+)\/?$/);
-    if (!roomMatch) return NextResponse.redirect(new URL("/", req.url));
-
-    const roomId = roomMatch[1];
-
-    const meta = await redis.hgetall<{connected: string[]; createdAt: number}>(`meta:${roomId}`);
-
-    if (!meta) {
-        return NextResponse.redirect(new URL("/?error=room-not-found", req.url))
-    }
-
-    const existingToken = req.cookies.get("x-auth-token")?.value;
-
-    // USER IS ALLOWED TO JOIN ROOM
-    if(existingToken && meta.connected.includes(existingToken)){
-        return NextResponse.next();
-    }
-
-    // USER IS NOT ALLOWED TO JOIN 
-    if(meta.connected.length >= 2){
-        return NextResponse.redirect(new URL("/?error=room-full", req.url))
-    }
-
-    const response = NextResponse.next();
-
-    const token = nanoid();
-
-    response.cookies.set("x-auth-token", token, {
-        path: "/",
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-    })
-
-    await redis.hset(`meta:${roomId}`, {
-        connected: [...meta.connected, token]
-    })
-
-    return response;
-
-    //localhost:3000/room/ueri347fjwk
-
-    // OVERVIEW: CHECK IF THE USER IS ALLOWED TO JOIN ROOM
-    // IF THEY ARE: LET THEM PASS
-    // IF THEY ARE NOT: SEND THEM BACK TO LOBBY
-}
-
-export const config = {
-    matcher: "/room/:path*",
-}
+export const config = { matcher: "/room/:path*" };
